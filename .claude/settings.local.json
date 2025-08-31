@@ -1,0 +1,11 @@
+{
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "financial-data-query"
+  ],
+  "permissions": {
+    "allow": [
+      "mcp__financial-data-query__search_transactions"
+    ]
+  }
+}

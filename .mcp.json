@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "financial-data-query": {
+      "command": "python",
+      "args": ["mcp/run_financial_mcp.py"],
+      "cwd": ".",
+      "env": {
+        "PYTHONPATH": "."
+      }
+    }
+  }
+}
