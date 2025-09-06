@@ -1,11 +1,16 @@
 {
+  "permissions": {
+    "allow": [
+      "mcp__financial-data-query__search_transactions",
+      "mcp__financial-data-query__query_voucher_details",
+      "mcp__financial-data-query__query_balance_sheet",
+      "mcp__financial-data-query__query_dimension_details",
+      "mcp__financial-data-query__get_financial_summary",
+      "mcp__financial-data-query__find_subject_by_name"
+    ]
+  },
   "enableAllProjectMcpServers": true,
   "enabledMcpjsonServers": [
     "financial-data-query"
-  ],
-  "permissions": {
-    "allow": [
-      "mcp__financial-data-query__search_transactions"
-    ]
-  }
+  ]
 }
