@@ -6,7 +6,8 @@
       "mcp__financial-data-query__query_balance_sheet",
       "mcp__financial-data-query__query_dimension_details",
       "mcp__financial-data-query__get_financial_summary",
-      "mcp__financial-data-query__find_subject_by_name"
+      "mcp__financial-data-query__find_subject_by_name",
+      "mcp__financial-data-query__analyze_subject_hierarchy"
     ]
   },
   "enableAllProjectMcpServers": true,

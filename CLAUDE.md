@@ -4,58 +4,131 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a data audit and cleaning project with a structured directory organization for processing CSV files. The project focuses on data transformation from raw information to cleaned, structured relational data tables.
+This is a financial data audit and processing system with MCP integration for advanced financial data querying. The project processes raw financial CSV files into structured relational data tables with comprehensive validation.
+
+## Architecture Overview
+
+### Core Components
+- **Data Processing Pipeline**: Raw CSV → Cleaning scripts → Structured output
+- **MCP Integration**: Real-time financial data querying through Model Context Protocol
+- **Validation System**: Comprehensive financial data validation with accounting checks
+- **Accounting Logic Engine**: Built-in accounting rules and business type identification
+
+### Key Technologies
+- **Pandas**: Primary data manipulation library
+- **MCP Protocol**: For AI-assisted financial data querying
+- **Financial Data Models**: Enhanced balance sheets with hierarchical structures
+- **Accounting Rules Engine**: Subject classification and balance validation
 
 ## Directory Structure
 
-- `information/` - Raw, unprocessed data files (CSV format)
-  - `Fin/` - Financial data files
-  - `Pur/` - Purchase data files
-- `cleaning/` - Python data cleaning scripts using pandas
-- `format-data/` - Cleaned, structured CSV output files
-- `operation/` - Operational scripts or workflows (currently empty)
+```
+├── raw-data/           # Raw CSV files
+│   └── Fin/           # Financial source data
+├── cleaning/          # Python cleaning and validation scripts
+├── format-data/       # Cleaned CSV output files
+│   └── financial/     # Enhanced financial data tables
+├── mcp/              # MCP server for financial data querying
+└── operation/        # Operational scripts
+```
 
 ## Development Commands
 
-Since this is a Python-based data processing project, common commands include:
-
+### Environment Setup
 ```bash
-# Activate the virtual environment befor run the python script(if requirements.txt and virtual environment exists)
-source venv/bin/activate
+# Activate virtual environment
+source venv/bin/activate  # Linux/Mac
+venv\Scripts\activate     # Windows
 
-# Run Python scripts for data cleaning
-python cleaning/script_name.py
-
-# Check Python syntax and style
-pylint cleaning/*.py
-flake8 cleaning/*.py
-
-# Run data validation on cleaned files
-python -c "import pandas as pd; pd.read_csv('format-data/file.csv').info()"
+# Install dependencies
+pip install -r requirements.txt
 ```
+
+### Data Processing
+```bash
+# Run financial data validation
+python cleaning/financial_validation.py
+
+# Adjust opening balances
+python cleaning/adjust_opening_balance.py
+
+# Convert CSV files to UTF-8 encoding
+python cleaning/convert_to_utf8.py
+```
+
+### MCP Server Operations
+```bash
+# Start financial data MCP server (auto-detects virtual environment)
+python mcp/run_financial_mcp.py
+
+# Direct MCP server execution (for debugging)
+python mcp/financial_data_mcp.py
+```
+
+### Data Analysis
+```bash
+# Quick data validation
+python -c "import pandas as pd; df = pd.read_csv('format-data/financial/final_enhanced_balance.csv'); print(df.info())"
+
+# Check data file sizes
+ls -la format-data/financial/
+```
+
+## Key Data Files
+
+### Processed Files (format-data/financial/)
+- `final_enhanced_balance.csv`: 8,666×17 enhanced balance sheet (2023-2025)
+- `final_voucher_detail.csv`: 52,170×27 voucher transaction details (2024-2025)
+
+## MCP Integration Features
+
+The MCP server provides real-time access to financial data through:
+- `query_balance_sheet`: Filter balance sheet data with accounting validation
+- `query_voucher_details`: Search voucher transactions with business type identification
+- `analyze_subject_hierarchy`: Analyze subject relationships and hierarchy
+- `search_transactions`: Keyword search in vouchers with fuzzy matching
+- `get_financial_summary`: Get aggregated statistics
+- `validate_data_consistency`: Verify balance-voucher consistency
+- `find_subject_by_name`: Smart subject name lookup
+- `query_dimension_details`: Detailed dimension analysis
 
 ## Data Processing Workflow
 
-1. **Raw Data**: Store in `information/` directory
-2. **Cleaning Scripts**: Create pandas-based scripts in `cleaning/` directory
-3. **Processed Data**: Output cleaned CSV files to `format-data/` directory
-4. **Documentation**: Maintain schema documentation in `format-data/Readme.md`
+1. **Raw Data**: CSV files in `raw-data/Fin/`
+2. **Cleaning**: Scripts in `cleaning/` directory
+3. **Enhanced Output**: Structured CSV files with hierarchical coding
+4. **MCP Integration**: Real-time query access with accounting logic
+5. **Validation**: Comprehensive accounting validation
 
-## Key Requirements
+## Financial Data Schema
 
-- Use pandas library for data manipulation
-- Create efficient, reliable, reusable relational data tables
-- Maintain documentation of data table schemas and characteristics
-- Check for existing scripts and data before creating new ones
-- Ensure data quality and consistency across processing steps
+### Enhanced Balance Sheet Features
+- Hierarchical subject coding with parent-child relationships
+- Dimension row identification for multi-dimensional accounting
+- Multi-level accounting validation with balance direction checks
+- Support for various financial dimensions (supplier, customer, department)
 
-## File Naming Patterns
+### Validation Rules
+- Accounting equation validation (Assets = Liabilities + Equity)
+- Year-over-year continuity checks
+- Hierarchy correctness validation
+- Voucher-to-balance reconciliation
+- Subject balance direction validation (asset/debit, liability/credit)
 
+## MCP Server Architecture
 
+### Configuration
+- Standard `.mcp.json` configuration in project root
+- Automatic virtual environment detection
+- Cross-platform support (Windows/Linux/macOS)
 
-## Best Practices
+### Data Loading
+- Optimized CSV loading with memory efficiency
+- Automatic path resolution for portability
+- Data type optimization for financial data
 
-- Always validate cleaned data structure
-- Document schema changes in format-data/Readme.md
-- Reuse existing cleaning scripts when appropriate
-- Ensure data integrity throughout the transformation process
+### Query Capabilities
+- Multi-dimensional filtering (company, period, subject, dimension)
+- Hierarchical subject queries with path syntax
+- Smart fuzzy matching for subject names
+- Accounting rule enforcement

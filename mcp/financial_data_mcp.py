@@ -17,8 +17,9 @@ from mcp.server.models import InitializationOptions
 import mcp.server.stdio
 import mcp.types as types
 
-# 数据文件路径
-DATA_DIR = Path("format-data/financial")
+# 数据文件路径 - 使用相对于项目根目录的路径
+BASE_DIR = Path(__file__).parent.parent
+DATA_DIR = BASE_DIR / "format-data/financial"
 BALANCE_FILE = DATA_DIR / "final_enhanced_balance.csv"
 VOUCHER_FILE = DATA_DIR / "final_voucher_detail.csv"
 
@@ -32,10 +33,16 @@ def load_data():
     
     def load_csv_with_optimization(file_path, dtype_mapping, date_columns=None):
         """通用CSV加载函数，支持数据类型优化"""
-        if not file_path.exists():
-            raise FileNotFoundError(f"❌ 文件不存在: {file_path}\n💡 请确保数据文件位于正确的目录中")
+        # 检查文件路径并尝试解析相对路径
+        resolved_path = file_path
+        if not resolved_path.exists():
+            # 尝试从项目根目录解析路径
+            project_root = Path(__file__).parent.parent
+            resolved_path = project_root / file_path
+            if not resolved_path.exists():
+                raise FileNotFoundError(f"❌ 文件不存在: {file_path}\n💡 请确保数据文件位于正确的目录中")
         
-        df = pd.read_csv(file_path, encoding='utf-8')
+        df = pd.read_csv(resolved_path, encoding='utf-8')
         
         # 应用数据类型转换
         for column, dtype_func in dtype_mapping.items():
@@ -108,6 +115,43 @@ def format_balance_info(row: pd.Series, include_dimension: bool = True) -> List[
     
     return lines
 
+def get_subject_category(subject_code: str) -> str:
+    """根据科目编码判断会计要素分类"""
+    code_prefix = subject_code.split(".")[0]
+    if code_prefix.startswith("1"):
+        return "资产类"
+    elif code_prefix.startswith("2"):
+        return "负债类"
+    elif code_prefix.startswith("3"):
+        return "共同类"
+    elif code_prefix.startswith("4"):
+        return "所有者权益类"
+    elif code_prefix.startswith("5"):
+        return "成本类"
+    elif code_prefix.startswith("6"):
+        return "损益类"
+    else:
+        return "其他类"
+
+def validate_subject_balance_direction(subject_code: str, ending_debit: float, ending_credit: float) -> tuple[bool, str]:
+    """验证科目余额方向是否符合会计准则"""
+    category = get_subject_category(subject_code)
+    
+    if category == "资产类":
+        # 资产类科目正常应为借方余额
+        if ending_credit > 0 and ending_debit == 0:
+            return False, f"资产类科目{subject_code}出现贷方余额{ending_credit:.2f}，可能存在异常"
+    elif category == "负债类":
+        # 负债类科目正常应为贷方余额
+        if ending_debit > 0 and ending_credit == 0:
+            return False, f"负债类科目{subject_code}出现借方余额{ending_debit:.2f}，可能存在异常"
+    elif category == "所有者权益类":
+        # 权益类科目正常应为贷方余额
+        if ending_debit > 0 and ending_credit == 0:
+            return False, f"权益类科目{subject_code}出现借方余额{ending_debit:.2f}，可能存在异常"
+    
+    return True, "余额方向正常"
+
 def get_financial_synonyms() -> Dict[str, List[str]]:
     """获取财务术语同义词映射"""
     return {
@@ -160,7 +204,7 @@ def enhanced_search_keywords(keyword: str, text_series: pd.Series) -> pd.Series:
     return exact_match | synonym_match | fuzzy_match
 
 def cross_validate_balance_voucher(subject_code: str, company: str = None, year: int = None) -> Dict[str, Any]:
-    """交叉验证余额表和凭证明细数据一致性"""
+    """增强的交叉验证余额表和凭证明细数据一致性"""
     global balance_df, voucher_df
     
     validation_result = {
@@ -169,7 +213,8 @@ def cross_validate_balance_voucher(subject_code: str, company: str = None, year:
         "balance_data": None,
         "voucher_summary": None,
         "differences": [],
-        "warnings": []
+        "warnings": [],
+        "accounting_logic_check": {}
     }
     
     try:
@@ -209,14 +254,18 @@ def cross_validate_balance_voucher(subject_code: str, company: str = None, year:
             "total_debit": balance_result["本年累计借方"].sum(),
             "total_credit": balance_result["本年累计贷方"].sum(),
             "ending_debit": balance_result["期末余额借方"].sum(),
-            "ending_credit": balance_result["期末余额贷方"].sum()
+            "ending_credit": balance_result["期末余额贷方"].sum(),
+            "opening_debit": balance_result["期初余额借方"].sum(),
+            "opening_credit": balance_result["期初余额贷方"].sum()
         }
         
         # 计算凭证明细汇总
         voucher_summary = {
             "total_debit": voucher_result["借方金额"].sum(),
             "total_credit": voucher_result["贷方金额"].sum(),
-            "net_amount": voucher_result["借方金额"].sum() - voucher_result["贷方金额"].sum()
+            "net_amount": voucher_result["借方金额"].sum() - voucher_result["贷方金额"].sum(),
+            "voucher_count": voucher_result["凭证唯一标识"].nunique(),
+            "record_count": len(voucher_result)
         }
         
         validation_result["balance_data"] = balance_summary
@@ -232,15 +281,42 @@ def cross_validate_balance_voucher(subject_code: str, company: str = None, year:
         if credit_diff > 0.01:
             validation_result["differences"].append(f"贷方金额不匹配：余额表{format_amount(balance_summary['total_credit'])} vs 凭证明细{format_amount(voucher_summary['total_credit'])}")
         
-        validation_result["validation_passed"] = len(validation_result["differences"]) == 0
+        # 增强会计逻辑检查
+        # 1. 余额方向检查
+        is_balance_direction_valid, balance_msg = validate_subject_balance_direction(
+            subject_code, balance_summary["ending_debit"], balance_summary["ending_credit"]
+        )
+        if not is_balance_direction_valid:
+            validation_result["accounting_logic_check"]["balance_direction"] = balance_msg
         
+        # 2. 期初期末连续性检查
+        opening_balance = balance_summary["opening_debit"] - balance_summary["opening_credit"]
+        ending_balance = balance_summary["ending_debit"] - balance_summary["ending_credit"]
+        period_change = ending_balance - opening_balance
+        voucher_net = voucher_summary["net_amount"]
+        
+        if abs(period_change - voucher_net) > 0.01:
+            validation_result["accounting_logic_check"]["period_continuity"] = f"期间余额变动异常：期初期末变动{format_amount(period_change)} ≠ 凭证净额{format_amount(voucher_net)}"
+        
+        # 3. 凭证借贷平衡检查
+        if abs(voucher_summary["total_debit"] - voucher_summary["total_credit"]) > 0.01:
+            validation_result["accounting_logic_check"]["voucher_balance"] = f"凭证借贷不平衡：借方{format_amount(voucher_summary['total_debit'])} ≠ 贷方{format_amount(voucher_summary['total_credit'])}"
+        
+        # 4. 大额交易检查
+        if voucher_summary["total_debit"] > 1000000 or voucher_summary["total_credit"] > 1000000:
+            validation_result["accounting_logic_check"]["large_amount"] = f"注意：该科目本期发生额较大（借方{format_amount(voucher_summary['total_debit'])}, 贷方{format_amount(voucher_summary['total_credit'])}）"
+        
+        validation_result["validation_passed"] = len(validation_result["differences"]) == 0 and len(validation_result["accounting_logic_check"]) == 0
+        
+    except ValueError as ve:
+        validation_result["warnings"].append(f"输入参数错误：{str(ve)}")
     except Exception as e:
         validation_result["warnings"].append(f"验证过程出错：{str(e)}")
     
     return validation_result
 
 def filter_dataframe(df: pd.DataFrame, filters: Dict[str, Any]) -> pd.DataFrame:
-    """通用数据框筛选函数"""
+    """增强的通用数据框筛选函数，增加会计逻辑验证"""
     result = df.copy()
     
     # 列名映射配置
@@ -250,20 +326,27 @@ def filter_dataframe(df: pd.DataFrame, filters: Dict[str, Any]) -> pd.DataFrame:
         "subject_code": "科目编码",
         "subject_path": "subject_code_path",
         "year": "年份",
-        "dimension_name": df.columns[3] if len(df.columns) > 3 else None,
+        "dimension_name": result.columns[3] if len(result.columns) > 3 else None,
         "subject_name_path": "subject_name_path"
     }
+    
+    # 会计科目编码验证
+    if "subject_code" in filters and filters["subject_code"]:
+        subject_code = str(filters["subject_code"]).strip()
+        # 验证科目编码格式（允许数字和点号）
+        if not re.match(r'^[\d.]+$', subject_code):
+            raise ValueError(f"科目编码 '{subject_code}' 格式不正确，应为数字和点号组合")
     
     for key, value in filters.items():
         if value is None or value == "":
             continue
             
         column_name = column_mapping.get(key)
-        if not column_name or column_name not in df.columns:
+        if not column_name or column_name not in result.columns:
             continue
             
         if key == "subject_path":
-            # 处理科目路径查询
+            # 处理科目路径查询 - 确保路径格式正确
             path_value = str(value).strip()
             if not path_value.startswith("/"):
                 path_value = "/" + path_value
@@ -271,7 +354,21 @@ def filter_dataframe(df: pd.DataFrame, filters: Dict[str, Any]) -> pd.DataFrame:
                 path_value = path_value + "/"
             result = result[result[column_name].str.contains(re.escape(path_value), case=False, na=False)]
         elif key == "year":
-            result = result[result[column_name] == int(value)]
+            # 年份验证 - 合理范围检查
+            year_value = int(value)
+            if year_value < 2000 or year_value > 2050:
+                raise ValueError(f"年份 {year_value} 超出合理范围（2000-2050）")
+            result = result[result[column_name] == year_value]
+        elif key == "subject_code":
+            # 科目编码查询优化 - 支持层级查询
+            code_value = str(value).strip()
+            if "." in code_value:
+                # 如果包含点号，进行精确匹配
+                result = result[result[column_name] == code_value]
+            else:
+                # 如果是父级科目，查询该科目及其所有子科目
+                result = result[(result[column_name] == code_value) | 
+                               (result[column_name].str.startswith(code_value + ".", na=False))]
         else:
             # 通用字符串包含匹配
             result = result[result[column_name].str.contains(str(value), case=False, na=False)]
@@ -585,108 +682,259 @@ async def handle_call_tool(name: str, arguments: dict) -> list[types.TextContent
         return [types.TextContent(type="text", text=error_msg)]
 
 async def query_balance_sheet(args: dict) -> list[types.TextContent]:
-    """查询科目余额表"""
+    """查询科目余额表 - 增强会计逻辑验证"""
     global balance_df
     
-    # 应用筛选条件
-    result = filter_dataframe(balance_df, args)
-    
-    # 限制返回数量
-    limit = args.get("limit", 100)
-    truncated = len(result) > limit
-    if truncated:
-        result = result.head(limit)
-    
-    if result.empty:
-        suggestion = "💡 建议：\n"
-        suggestion += "- 检查科目编码是否正确\n"
-        suggestion += "- 尝试使用部分匹配（如：输入'1601'查找固定资产相关科目）\n"
-        suggestion += "- 检查公司名称和年份参数是否正确\n"
-        suggestion += "- 使用 get_financial_summary 工具查看可用的数据范围"
-        return [types.TextContent(type="text", text=f"❌ 未找到符合条件的余额记录\n\n{suggestion}")]
-    
-    # 格式化输出
-    output_lines = create_output_header("科目余额表查询结果", len(result), truncated, limit)
-    
-    for _, row in result.iterrows():
-        subject_code = str(row['科目编码']) if pd.notna(row['科目编码']) else "未知编码"
-        subject_name = str(row['科目名称']) if pd.notna(row['科目名称']) else "未知名称"
+    try:
+        # 应用筛选条件
+        result = filter_dataframe(balance_df, args)
         
-        output_lines.append(f"## 科目: {subject_code} - {subject_name}")
-        output_lines.append(f"**公司**: {row['公司']}")
-        output_lines.append(f"**期间**: {row['期间']}")
+        # 限制返回数量
+        limit = args.get("limit", 100)
+        truncated = len(result) > limit
+        if truncated:
+            result = result.head(limit)
         
-        # 添加余额信息
-        output_lines.extend(format_balance_info(row))
-        output_lines.append("")
-    
-    return [types.TextContent(type="text", text="\n".join(output_lines))]
-
-async def query_voucher_details(args: dict) -> list[types.TextContent]:
-    """查询凭证明细"""
-    global voucher_df
-    
-    # 使用统一的筛选函数
-    voucher_filters = {}
-    for key in ['company', 'subject_code', 'voucher_no']:
-        if args.get(key):
-            voucher_filters[key] = args[key]
-    
-    result = filter_dataframe(voucher_df, voucher_filters)
-    
-    # 处理日期范围筛选
-    if args.get("date_start"):
-        start_date = pd.to_datetime(args["date_start"])
-        result = result[result["日期"] >= start_date]
-    
-    if args.get("date_end"):
-        end_date = pd.to_datetime(args["date_end"])
-        result = result[result["日期"] <= end_date]
-    
-    # 处理金额范围筛选
-    if args.get("amount_min"):
-        amount_min = args["amount_min"]
-        result = result[(result["借方金额"] >= amount_min) | (result["贷方金额"] >= amount_min)]
-    
-    if args.get("amount_max"):
-        amount_max = args["amount_max"]
-        result = result[(result["借方金额"] <= amount_max) | (result["贷方金额"] <= amount_max)]
-    
-    # 限制返回数量
-    limit = args.get("limit", 100)
-    truncated = len(result) > limit
-    if truncated:
-        result = result.head(limit)
-    
-    if result.empty:
-        suggestion = "💡 建议：\n"
-        suggestion += "- 检查日期范围是否正确\n"
-        suggestion += "- 尝试扩大搜索范围（如：减少筛选条件）\n"
-        suggestion += "- 检查科目编码格式\n"
-        suggestion += "- 使用 search_transactions 工具通过关键词搜索"
-        return [types.TextContent(type="text", text=f"❌ 未找到符合条件的凭证记录\n\n{suggestion}")]
-    
-    # 格式化输出
-    output_lines = create_output_header("凭证明细查询结果", len(result), truncated, limit)
-    
-    current_voucher = None
-    for _, row in result.iterrows():
-        voucher_key = f"{row['凭证字']}-{row['凭证号']}"
+        if result.empty:
+            suggestion = "💡 建议：\n"
+            suggestion += "- 检查科目编码是否正确（应为数字和点号组合，如1002或1002.01）\n"
+            suggestion += "- 尝试使用部分匹配（如：输入'1002'查找银行存款及其子科目）\n"
+            suggestion += "- 检查公司名称和年份参数是否正确（年份应在2000-2050范围内）\n"
+            suggestion += "- 使用 get_financial_summary 工具查看可用的数据范围"
+            return [types.TextContent(type="text", text=f"❌ 未找到符合条件的余额记录\n\n{suggestion}")]
         
-        if current_voucher != voucher_key:
-            current_voucher = voucher_key
-            output_lines.append(f"## 凭证: {voucher_key}")
-            output_lines.append(f"**日期**: {row['日期'].strftime('%Y-%m-%d') if pd.notna(row['日期']) else 'N/A'}")
+        # 格式化输出
+        output_lines = create_output_header("科目余额表查询结果", len(result), truncated, limit)
+        
+        # 会计逻辑验证和增强显示
+        warnings = []
+        category_summary = {}
+        
+        for _, row in result.iterrows():
+            subject_code = str(row['科目编码']) if pd.notna(row['科目编码']) else "未知编码"
+            subject_name = str(row['科目名称']) if pd.notna(row['科目名称']) else "未知名称"
+            
+            # 获取科目类别
+            category = get_subject_category(subject_code)
+            
+            # 收集类别汇总信息
+            if category not in category_summary:
+                category_summary[category] = 0
+            category_summary[category] += 1
+            
+            # 验证余额方向
+            ending_debit = float(row.get('期末余额借方', 0)) if pd.notna(row.get('期末余额借方')) else 0
+            ending_credit = float(row.get('期末余额贷方', 0)) if pd.notna(row.get('期末余额贷方')) else 0
+            
+            is_valid, balance_message = validate_subject_balance_direction(subject_code, ending_debit, ending_credit)
+            if not is_valid:
+                warnings.append(balance_message)
+            
+            output_lines.append(f"## 科目: {subject_code} - {subject_name}")
+            output_lines.append(f"**公司**: {row['公司']}")
+            output_lines.append(f"**期间**: {row['期间']}")
+            output_lines.append(f"**科目类别**: {category}")
+            
+            # 添加余额信息
+            output_lines.extend(format_balance_info(row))
             output_lines.append("")
         
-        output_lines.append(f"### 分录 {row['分录行号']}")
-        output_lines.append(f"**摘要**: {row['摘要']}")
-        output_lines.append(f"**科目**: {row['科目编码']} - {row['科目全名']}")
-        output_lines.append(f"**借方**: {format_amount(row['借方金额'])}")
-        output_lines.append(f"**贷方**: {format_amount(row['贷方金额'])}")
-        output_lines.append("")
+        # 添加会计逻辑验证结果
+        if warnings:
+            output_lines.append("## ⚠️ 会计逻辑检查")
+            output_lines.append("发现以下异常情况：")
+            for warning in warnings:
+                output_lines.append(f"- {warning}")
+            output_lines.append("")
+        
+        # 添加类别汇总
+        if len(category_summary) > 1:
+            output_lines.append("## 📊 科目类别汇总")
+            for category, count in category_summary.items():
+                output_lines.append(f"- {category}: {count} 个科目")
+            output_lines.append("")
+        
+        return [types.TextContent(type="text", text="\n".join(output_lines))]
+        
+    except ValueError as ve:
+        return [types.TextContent(type="text", text=f"❌ 输入参数错误: {str(ve)}\n\n请检查输入的科目编码格式和年份范围。")]
+    except Exception as e:
+        return [types.TextContent(type="text", text=f"❌ 查询过程出错: {str(e)}")]
+
+def identify_business_type(summary: str, subject_code: str, subject_name: str) -> str:
+    """根据摘要和科目信息识别业务类型"""
+    summary_lower = summary.lower() if summary else ""
     
-    return [types.TextContent(type="text", text="\n".join(output_lines))]
+    # 收款业务识别
+    if any(keyword in summary_lower for keyword in ['收到', '收款', '货款', '回款', '还款']):
+        if '1122' in subject_code or '应收' in subject_name:
+            return "销售收款"
+        elif '1121' in subject_code or '应收票据' in subject_name:
+            return "票据收款"
+        elif '2202' in subject_code or '应付' in subject_name:
+            return "预收款项"
+        else:
+            return "其他收款"
+    
+    # 付款业务识别
+    elif any(keyword in summary_lower for keyword in ['支付', '付款', '采购', '购买', '预付']):
+        if '2202' in subject_code or '应付' in subject_name:
+            return "采购付款"
+        elif '1123' in subject_code or '预付' in subject_name:
+            return "预付款项"
+        elif '6601' in subject_code or '销售费用' in subject_name:
+            return "销售费用"
+        elif '6602' in subject_code or '管理费用' in subject_name:
+            return "管理费用"
+        elif '6603' in subject_code or '财务费用' in subject_name:
+            return "财务费用"
+        else:
+            return "其他付款"
+    
+    # 转账业务识别
+    elif any(keyword in summary_lower for keyword in ['转账', '划转', '内部', '调拨']):
+        if '1002' in subject_code or '银行存款' in subject_name:
+            return "银行转账"
+        else:
+            return "内部转账"
+    
+    # 根据科目代码判断
+    elif subject_code.startswith('6') or '费用' in subject_name:
+        return "费用报销"
+    elif subject_code.startswith('1') and '存款' in subject_name:
+        return "资金业务"
+    elif subject_code.startswith('2') and '应付' in subject_name:
+        return "应付款项"
+    
+    return "其他业务"
+
+def validate_voucher_balance(voucher_df: pd.DataFrame, voucher_key: str) -> tuple[bool, float, float]:
+    """验证凭证借贷平衡"""
+    voucher_data = voucher_df[voucher_df['凭证唯一标识'] == voucher_key]
+    if voucher_data.empty:
+        return False, 0, 0
+    
+    total_debit = voucher_data['借方金额'].sum()
+    total_credit = voucher_data['贷方金额'].sum()
+    is_balanced = abs(total_debit - total_credit) < 0.01  # 允许0.01的舍入误差
+    
+    return is_balanced, total_debit, total_credit
+
+async def query_voucher_details(args: dict) -> list[types.TextContent]:
+    """查询凭证明细 - 增强业务逻辑识别"""
+    global voucher_df
+    
+    try:
+        # 使用统一的筛选函数
+        voucher_filters = {}
+        for key in ['company', 'subject_code', 'voucher_no']:
+            if args.get(key):
+                voucher_filters[key] = args[key]
+        
+        result = filter_dataframe(voucher_df, voucher_filters)
+        
+        # 处理日期范围筛选
+        if args.get("date_start"):
+            start_date = pd.to_datetime(args["date_start"])
+            result = result[result["日期"] >= start_date]
+        
+        if args.get("date_end"):
+            end_date = pd.to_datetime(args["date_end"])
+            result = result[result["日期"] <= end_date]
+        
+        # 处理金额范围筛选 - 增强会计逻辑
+        if args.get("amount_min"):
+            amount_min = args["amount_min"]
+            # 会计逻辑：金额必须为正数
+            if amount_min < 0:
+                raise ValueError("金额下限不能为负数")
+            result = result[(result["借方金额"] >= amount_min) | (result["贷方金额"] >= amount_min)]
+        
+        if args.get("amount_max"):
+            amount_max = args["amount_max"]
+            # 会计逻辑：检查金额合理性
+            if amount_max > 100000000:  # 1亿以上需要额外注意
+                result = result[(result["借方金额"] <= amount_max) | (result["贷方金额"] <= amount_max)]
+            else:
+                result = result[(result["借方金额"] <= amount_max) | (result["贷方金额"] <= amount_max)]
+        
+        # 限制返回数量
+        limit = args.get("limit", 100)
+        truncated = len(result) > limit
+        if truncated:
+            result = result.head(limit)
+        
+        if result.empty:
+            suggestion = "💡 建议：\n"
+            suggestion += "- 检查日期范围是否正确（格式：YYYY-MM-DD）\n"
+            suggestion += "- 尝试扩大搜索范围（如：减少筛选条件）\n"
+            suggestion += "- 检查科目编码格式（应为数字和点号组合）\n"
+            suggestion += "- 检查金额范围是否为正数\n"
+            suggestion += "- 使用 search_transactions 工具通过关键词搜索"
+            return [types.TextContent(type="text", text=f"❌ 未找到符合条件的凭证记录\n\n{suggestion}")]
+        
+        # 格式化输出 - 增强业务逻辑显示
+        output_lines = create_output_header("凭证明细查询结果", len(result), truncated, limit)
+        
+        # 凭证平衡性检查
+        voucher_balance_check = {}
+        business_type_summary = {}
+        
+        current_voucher = None
+        for _, row in result.iterrows():
+            voucher_key = f"{row['凭证字']}-{row['凭证号']}"
+            
+            # 识别业务类型
+            business_type = identify_business_type(row['摘要'], row['科目编码'], row['科目全名'])
+            if business_type not in business_type_summary:
+                business_type_summary[business_type] = 0
+            business_type_summary[business_type] += 1
+            
+            if current_voucher != voucher_key:
+                current_voucher = voucher_key
+                
+                # 检查凭证借贷平衡
+                is_balanced, total_debit, total_credit = validate_voucher_balance(result, voucher_key)
+                voucher_balance_check[voucher_key] = is_balanced
+                
+                output_lines.append(f"## 凭证: {voucher_key}")
+                output_lines.append(f"**日期**: {row['日期'].strftime('%Y-%m-%d') if pd.notna(row['日期']) else 'N/A'}")
+                
+                if not is_balanced:
+                    output_lines.append(f"⚠️ **借贷不平衡**: 借方{format_amount(total_debit)} ≠ 贷方{format_amount(total_credit)}")
+                
+                output_lines.append("")
+            
+            output_lines.append(f"### 分录 {row['分录行号']}")
+            output_lines.append(f"**业务类型**: {business_type}")
+            output_lines.append(f"**摘要**: {row['摘要']}")
+            output_lines.append(f"**科目**: {row['科目编码']} - {row['科目全名']}")
+            output_lines.append(f"**借方**: {format_amount(row['借方金额'])}")
+            output_lines.append(f"**贷方**: {format_amount(row['贷方金额'])}")
+            output_lines.append("")
+        
+        # 添加业务类型汇总
+        if business_type_summary:
+            output_lines.append("## 📊 业务类型汇总")
+            for business_type, count in business_type_summary.items():
+                output_lines.append(f"- {business_type}: {count} 笔分录")
+            output_lines.append("")
+        
+        # 添加异常凭证提醒
+        unbalanced_vouchers = [v for v, balanced in voucher_balance_check.items() if not balanced]
+        if unbalanced_vouchers:
+            output_lines.append("## ⚠️ 异常凭证提醒")
+            output_lines.append("以下凭证存在借贷不平衡，需要核查：")
+            for voucher in unbalanced_vouchers:
+                output_lines.append(f"- {voucher}")
+            output_lines.append("")
+        
+        return [types.TextContent(type="text", text="\n".join(output_lines))]
+        
+    except ValueError as ve:
+        return [types.TextContent(type="text", text=f"❌ 输入参数错误: {str(ve)}")]
+    except Exception as e:
+        return [types.TextContent(type="text", text=f"❌ 查询过程出错: {str(e)}")]
 
 async def analyze_subject_hierarchy(args: dict) -> list[types.TextContent]:
     """分析科目层级结构"""
@@ -739,7 +987,7 @@ async def analyze_subject_hierarchy(args: dict) -> list[types.TextContent]:
         output_lines.append(f"{indent}  - 期末贷方: {format_amount(row['期末余额贷方'])}")
         
         # 优化核算维度显示
-        dimension_name = row.get(df.columns[3])
+        dimension_name = row.iloc[3] if len(row) > 3 else None
         if pd.notna(dimension_name) and str(dimension_name).strip() and str(dimension_name) != 'nan':
             output_lines.append(f"{indent}  - 核算维度: {dimension_name}")
     
@@ -899,6 +1147,8 @@ async def validate_data_consistency(args: dict) -> list[types.TextContent]:
         
         output_lines.append("\n## 📊 数据对比")
         output_lines.append("\n### 余额表数据")
+        output_lines.append(f"- 期初余额借方：{format_amount(balance_data['opening_debit'])}")
+        output_lines.append(f"- 期初余额贷方：{format_amount(balance_data['opening_credit'])}")
         output_lines.append(f"- 本年累计借方：{format_amount(balance_data['total_debit'])}")
         output_lines.append(f"- 本年累计贷方：{format_amount(balance_data['total_credit'])}")
         output_lines.append(f"- 期末余额借方：{format_amount(balance_data['ending_debit'])}")
@@ -908,6 +1158,17 @@ async def validate_data_consistency(args: dict) -> list[types.TextContent]:
         output_lines.append(f"- 借方金额合计：{format_amount(voucher_data['total_debit'])}")
         output_lines.append(f"- 贷方金额合计：{format_amount(voucher_data['total_credit'])}")
         output_lines.append(f"- 净额：{format_amount(voucher_data['net_amount'])}")
+        output_lines.append(f"- 凭证数量：{voucher_data['voucher_count']}")
+        output_lines.append(f"- 分录数量：{voucher_data['record_count']}")
+    
+    # 显示会计逻辑检查
+    if validation_result["accounting_logic_check"]:
+        output_lines.append("\n## 🔍 会计逻辑检查")
+        for check_type, message in validation_result["accounting_logic_check"].items():
+            if "大额" in message:
+                output_lines.append(f"⚠️ {message}")
+            else:
+                output_lines.append(f"❌ {message}")
     
     return [types.TextContent(type="text", text="\n".join(output_lines))]
 
